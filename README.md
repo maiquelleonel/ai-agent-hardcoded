@@ -1,4 +1,4 @@
-# AI Agent Bootcamp — Enterprise AI Initiative Assessment Agent
+# AI Agent Hardcoded — Enterprise AI Initiative Assessment Agent
 
 Este projeto é um **agente de IA para avaliação de iniciativas enterprise de Inteligência Artificial**.
 
