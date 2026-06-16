@@ -1,4 +1,5 @@
 import os
+from typing import Any
 
 from openai import OpenAI
 
@@ -17,3 +18,6 @@ class OpenAIService(BaseAIService):
     def generate_response(self, messages: list, **kwargs) -> str:
         response = self.client.chat.completions.create(model=self.model, messages=messages, **kwargs)
         return response.choices[0].message.content
+
+    def generate_with_tools(self, messages: list, tools: list, **kwargs) -> Any:
+        return self.client.chat.completions.create(model=self.model, messages=messages, tools=tools, **kwargs)

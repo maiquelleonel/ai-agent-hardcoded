@@ -1,14 +1,11 @@
 import json
 import math
-import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from dotenv import load_dotenv
 from fastapi import HTTPException
-from openai import OpenAI
 
 from constants import (
     DATA_DIR,
@@ -19,17 +16,6 @@ from constants import (
     SESSION_MEMORY,
 )
 from schemas import HumanReviewItem, SavedAssessment
-
-
-def save_assessments(items):
-    with DB_FILE.open("w", encoding="utf-8") as f:
-        json.dump(items, f, ensure_ascii=False, indent=2)
-
-
-# Carrega variáveis de ambiente e configura o cliente OpenAI
-load_dotenv()
-MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-5")
-client = OpenAI()
 
 
 def log_event(event: str, details: str = ""):
@@ -45,6 +31,11 @@ def read_json_file(filepath: Path):
 def write_json_file(filepath: Path, payload: dict):
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def save_assessments(items):
+    with DB_FILE.open("w", encoding="utf-8") as f:
+        json.dump(items, f, ensure_ascii=False, indent=2)
 
 
 def get_embedding_path(assessment_id: str) -> Path:
@@ -130,16 +121,12 @@ def tokenize_text(text: str) -> set[str]:
 def compute_simple_similarity(text_a: str, text_b: str) -> int:
     tokens_a = tokenize_text(text_a)
     tokens_b = tokenize_text(text_b)
-
     if not tokens_a or not tokens_b:
         return 0
-
     intersection = len(tokens_a.intersection(tokens_b))
     union = len(tokens_a.union(tokens_b))
-
     if union == 0:
         return 0
-
     return round((intersection / union) * 100)
 
 
@@ -152,42 +139,34 @@ def find_assessment_by_id(assessment_id: str):
 
 
 def get_embedding(text: str) -> list[float]:
-    response = client.embeddings.create(model="text-embedding-3-small", input=text)
-    return response.data[0].embedding
+    from services.factory import get_ai_service
+
+    return get_ai_service().get_embedding(text)
 
 
 def cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
     if not vec_a or not vec_b or len(vec_a) != len(vec_b):
         return 0.0
-
     dot = sum(a * b for a, b in zip(vec_a, vec_b))
     norm_a = math.sqrt(sum(a * a for a in vec_a))
     norm_b = math.sqrt(sum(b * b for b in vec_b))
-
     if norm_a == 0 or norm_b == 0:
         return 0.0
-
     return dot / (norm_a * norm_b)
 
 
 def detect_initiative_type(description: str) -> str:
     text = description.lower()
-
     if any(term in text for term in ["rh", "ti", "atendimento interno", "help desk", "service desk", "colaborador"]):
         return "internal_copilot"
-
     if any(term in text for term in ["contrato", "cláusula", "jurídico", "fornecedor", "compliance contratual"]):
         return "contract_analysis"
-
     if any(term in text for term in ["crm", "lead", "pipeline", "vendas", "oportunidade comercial"]):
         return "sales_ai"
-
     if any(term in text for term in ["sensor", "falha", "equipamento", "manutenção preditiva", "iot"]):
         return "predictive_maintenance"
-
     if any(term in text for term in ["documento", "base de conhecimento", "faq", "política interna", "pdf"]):
         return "knowledge_assistant"
-
     return "generic_ai_initiative"
 
 
@@ -278,42 +257,31 @@ def get_common_risks(initiative_type: str) -> list[str]:
 def build_memory_summary(similar_cases: list[dict]) -> str:
     if not similar_cases:
         return "No similar historical cases found."
-
     parts = []
     for case in similar_cases:
-        part = (
-            f"Case {case['assessment_id']} had viability_score={case['viability_score']} "
-            f"with similarity_score={case['similarity_score']}"
-        )
+        part = f"Case {case['assessment_id']} had viability_score={case['viability_score']} with similarity_score={case['similarity_score']}"
         if case.get("review_status"):
             part += f" and review_status={case['review_status']}"
         parts.append(part)
-
     return " | ".join(parts)
 
 
 def compute_review_priority(saved: SavedAssessment) -> str:
     result = saved.result
-
     if not result.review_decision or not result.review_decision.requires_human_review:
         return "low"
-
     if result.scores:
         if result.scores.governance_risk >= 8 or result.scores.integration_effort >= 8:
             return "high"
-
     if result.review_decision.confidence_level == "low":
         return "high"
-
     return "medium"
 
 
 def create_review_item(saved: SavedAssessment):
     result = saved.result
-
     if not result.review_decision or not result.review_decision.requires_human_review:
         return None
-
     review = HumanReviewItem(
         review_id=str(uuid4()),
         assessment_id=saved.id,
@@ -328,20 +296,16 @@ def create_review_item(saved: SavedAssessment):
     return review
 
 
-def save_assessment(
-    initiative_text: str, result: Any
-):  # Usando Any para evitar circular import com InitiativeAssessment
+def save_assessment(initiative_text: str, result: Any):
     saved = SavedAssessment(id=str(uuid4()), created_at=datetime.utcnow(), initiative=initiative_text, result=result)
     filepath = get_assessment_path(saved.id)
     write_json_file(filepath, saved.model_dump(mode="json"))
     update_session_memory(saved)
-
     try:
         embedding = get_embedding(initiative_text)
         save_embedding(saved.id, initiative_text, embedding)
     except Exception as e:
         log_event("EMBEDDING_SAVE_ERROR", f"id={saved.id} error={repr(e)}")
-
     return saved
 
 
@@ -349,7 +313,6 @@ def find_similar_cases_semantic(current_initiative: str, limit: int = 5, min_sim
     current_embedding = get_embedding(current_initiative)
     embeddings = load_all_embeddings()
     assessments = {item["id"]: item for item in load_all_assessments()}
-
     review_lookup = {}
     for review_file in REVIEW_DIR.glob("*.json"):
         try:
@@ -357,28 +320,20 @@ def find_similar_cases_semantic(current_initiative: str, limit: int = 5, min_sim
             review_lookup[review_data["assessment_id"]] = review_data
         except Exception:
             continue
-
     similar = []
-
     for item in embeddings:
         assessment_id = item.get("assessment_id")
         stored_embedding = item.get("embedding")
-
         if not assessment_id or not stored_embedding:
             continue
-
         assessment = assessments.get(assessment_id)
         if not assessment:
             continue
-
         similarity = cosine_similarity(current_embedding, stored_embedding)
         similarity_score = round(similarity * 100)
-
         if similarity_score < min_similarity:
             continue
-
         review_data = review_lookup.get(assessment_id)
-
         similar.append(
             {
                 "assessment_id": assessment_id,
@@ -390,7 +345,6 @@ def find_similar_cases_semantic(current_initiative: str, limit: int = 5, min_sim
                 "review_reason": review_data["review_reason"] if review_data else None,
             }
         )
-
     similar.sort(key=lambda x: (-x["similarity_score"], -x["viability_score"]))
     return similar[:limit]
 
@@ -398,14 +352,11 @@ def find_similar_cases_semantic(current_initiative: str, limit: int = 5, min_sim
 def find_similar_cases_simple(current_initiative: str, limit: int = 5, min_similarity: int = 15) -> list[dict]:
     assessments = load_all_assessments()
     similar_cases = []
-
     for item in assessments:
         initiative_text = item.get("initiative", "")
         similarity_score = compute_simple_similarity(current_initiative, initiative_text)
-
         if similarity_score < min_similarity:
             continue
-
         similar_cases.append(
             {
                 "assessment_id": item["id"],
@@ -417,16 +368,12 @@ def find_similar_cases_simple(current_initiative: str, limit: int = 5, min_simil
                 "review_reason": "Fallback lexical similarity used because semantic search returned no results.",
             }
         )
-
     similar_cases.sort(key=lambda x: (-x["similarity_score"], -(x["viability_score"] or 0)))
-
     return similar_cases[:limit]
 
 
 def find_similar_cases_hybrid(current_initiative: str, limit: int = 5) -> list[dict]:
     semantic_cases = find_similar_cases_semantic(current_initiative=current_initiative, limit=limit, min_similarity=55)
-
     if semantic_cases:
         return semantic_cases
-
     return find_similar_cases_simple(current_initiative=current_initiative, limit=limit, min_similarity=15)

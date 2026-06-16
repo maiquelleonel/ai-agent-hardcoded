@@ -111,7 +111,7 @@ Utilizamos o `uv` para o gerenciamento de pacotes.
 
 ```bash
 uv sync
-uv run uvicorn main:app --reload
+uv run uvicorn app:app --reload
 ```
 
 O backend ficará disponível em `http://127.0.0.1:8000`.

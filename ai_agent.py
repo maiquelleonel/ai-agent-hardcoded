@@ -1,3 +1,5 @@
+# Veja o TODO.md para o roadmap da refatoração OO
+
 import json
 from typing import Any, Dict
 
@@ -31,7 +33,6 @@ TOOLS = [
             "type": "object",
             "properties": {"description": {"type": "string", "description": "Descrição textual da iniciativa"}},
             "required": ["description"],
-            "additionalProperties": False,
         },
     },
     {
@@ -42,7 +43,6 @@ TOOLS = [
             "type": "object",
             "properties": {"initiative_type": {"type": "string", "description": "Tipo classificado da iniciativa"}},
             "required": ["initiative_type"],
-            "additionalProperties": False,
         },
     },
     {
@@ -53,7 +53,6 @@ TOOLS = [
             "type": "object",
             "properties": {"initiative_type": {"type": "string", "description": "Tipo classificado da iniciativa"}},
             "required": ["initiative_type"],
-            "additionalProperties": False,
         },
     },
 ]
@@ -104,7 +103,7 @@ def parse_initiative_description(initiative_description: str) -> ParsedInitiativ
                 "content": f"Leia a iniciativa abaixo e extraia uma estrutura padronizada:\n\n{initiative_description}",
             },
         ],
-        response_format={"type": "json_object"},
+        response_schema=ParsedInitiative,
     )
     data = json.loads(content)
     data = normalize_parsed_initiative(data)
@@ -112,10 +111,7 @@ def parse_initiative_description(initiative_description: str) -> ParsedInitiativ
 
 
 def run_tool_phase(initiative_description: str, memory_summary: str = ""):
-    # Nota: A Service Layer precisa ser adaptada para suportar tool calls explicitamente
-    # se quisermos ser 100% agnósticos. Por enquanto, a OpenAIService suporta tool_calls.
-    return ai_service.client.chat.completions.create(
-        model=ai_service.model,
+    return ai_service.generate_with_tools(
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {
@@ -136,7 +132,7 @@ def run_final_phase(initiative_description: str, tool_context: dict, retry_count
                 "content": f"Analise a iniciativa: {initiative_description}\n\nContexto: {json.dumps(tool_context)}",
             },
         ],
-        response_format={"type": "json_object"},
+        response_schema=InitiativeAssessment,
     )
     data = json.loads(content)
     data = normalize_response(data)
@@ -167,7 +163,7 @@ def score_initiative(parsed: ParsedInitiative, tool_context: dict) -> Assessment
                 "content": f"Avalie a iniciativa: {parsed.model_dump_json()} | Contexto: {json.dumps(tool_context)}",
             },
         ],
-        response_format={"type": "json_object"},
+        response_schema=AssessmentScores,
     )
     data = json.loads(content)
     scores = AssessmentScores.model_validate(data)
@@ -216,7 +212,6 @@ def assess_initiative(
     parsed = parse_initiative_description(initiative_description)
     _ = run_tool_phase(initiative_description, memory_summary)
 
-    # Execução das tools (simulada)
     tool_context = {"parsed_initiative": parsed.model_dump()}
 
     scores = score_initiative(parsed, tool_context)
@@ -244,7 +239,7 @@ def compare_assessments(current_assessment: dict, previous_assessment: dict) -> 
                 "content": f"Compare:\n{json.dumps(current_assessment)}\n\nE:\n{json.dumps(previous_assessment)}",
             },
         ],
-        response_format={"type": "json_object"},
+        response_schema=AssessmentComparisonResult,
     )
     data = json.loads(content)
     return AssessmentComparisonResult.model_validate(data)

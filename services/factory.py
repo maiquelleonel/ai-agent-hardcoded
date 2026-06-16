@@ -1,18 +1,19 @@
 import os
 
-from services.openai_service import OpenAIService
+from dotenv import load_dotenv
 
 from services.ai_service import BaseAIService
+from services.gemini_service import GeminiService
+from services.openai_service import OpenAIService
 
-# from services.gemini_service import GeminiService
+# Garante que as variáveis do .env estejam carregadas
+load_dotenv()
 
 
 def get_ai_service() -> BaseAIService:
-    provider = os.getenv("AI_PROVIDER", "openai").lower()
-
-    if provider == "openai":
+    if os.getenv("OPENAI_API_KEY"):
         return OpenAIService()
-    # elif provider == "gemini":
-    #     return GeminiService()
+    elif os.getenv("GEMINI_API_KEY"):
+        return GeminiService()
 
-    raise ValueError(f"Provider {provider} não suportado.")
+    raise ValueError("Nenhum provedor de IA configurado. Por favor, forneça OPENAI_API_KEY ou GEMINI_API_KEY.")

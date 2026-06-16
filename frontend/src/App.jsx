@@ -37,7 +37,9 @@ function formatAssessment(saved) {
   (result.quick_wins || []).forEach((item) => lines.push(`- ${item}`));
   lines.push("");
 
-  lines.push(`Nota final de viabilidade: ${result.viability_score ?? "-"} / 10`);
+  lines.push(
+    `Nota final de viabilidade: ${result.viability_score ?? "-"} / 10`,
+  );
 
   if (result.scores) {
     lines.push("");
@@ -57,7 +59,7 @@ function formatAssessment(saved) {
     lines.push(
       `Requires human review: ${
         result.review_decision.requires_human_review ? "yes" : "no"
-      }`
+      }`,
     );
     lines.push(`Confidence: ${result.review_decision.confidence_level || ""}`);
     lines.push(`Reason: ${result.review_decision.review_reason || ""}`);
@@ -76,7 +78,7 @@ function formatAssessment(saved) {
     lines.push("=== SCORE EXPLANATIONS ===");
     result.score_explanations.forEach((item) => {
       lines.push(
-        `- ${item.dimension}: ${item.original_score} -> ${item.adjusted_score} | ${item.reason}`
+        `- ${item.dimension}: ${item.original_score} -> ${item.adjusted_score} | ${item.reason}`,
       );
     });
   }
@@ -193,11 +195,11 @@ export default function App() {
       const res = await fetch(`${API_BASE}/assess`, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          initiative: initiative.trim()
-        })
+          initiative: initiative.trim(),
+        }),
       });
 
       const payload = await res.json().catch(() => null);
@@ -243,7 +245,7 @@ export default function App() {
     try {
       const res = await fetch(`${API_BASE}/assess-file`, {
         method: "POST",
-        body: formData
+        body: formData,
       });
 
       const payload = await res.json().catch(() => null);
@@ -317,12 +319,12 @@ export default function App() {
       const res = await fetch(`${API_BASE}/compare`, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
         },
         body: JSON.stringify({
           current_id: compareCurrentId,
-          previous_id: comparePreviousId
-        })
+          previous_id: comparePreviousId,
+        }),
       });
 
       const payload = await res.json().catch(() => null);
@@ -357,11 +359,11 @@ export default function App() {
       const res = await fetch(`${API_BASE}/memory/search-semantic`, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          initiative: textToSearch
-        })
+          initiative: textToSearch,
+        }),
       });
 
       const payload = await res.json().catch(() => null);
@@ -402,7 +404,11 @@ export default function App() {
                   placeholder="Descreva a iniciativa de IA..."
                   rows={6}
                 />
-                <button type="submit" className="primary-button" disabled={loading}>
+                <button
+                  type="submit"
+                  className="primary-button"
+                  disabled={loading}
+                >
                   {loading ? "Processando..." : "Analisar iniciativa"}
                 </button>
               </form>
@@ -416,7 +422,11 @@ export default function App() {
                   accept=".txt,.md"
                   onChange={(e) => setFile(e.target.files?.[0] || null)}
                 />
-                <button type="submit" className="primary-button" disabled={loading}>
+                <button
+                  type="submit"
+                  className="primary-button"
+                  disabled={loading}
+                >
                   {loading ? "Processando..." : "Enviar arquivo"}
                 </button>
               </form>
@@ -470,7 +480,8 @@ export default function App() {
                     <option value="">Selecione</option>
                     {history.map((item) => (
                       <option key={`current-${item.id}`} value={item.id}>
-                        {item.id}
+                        {item.id.slice(0, 8)} -{" "}
+                        {(item.initiative || "").slice(0, 30)}...
                       </option>
                     ))}
                   </select>
@@ -486,7 +497,8 @@ export default function App() {
                     <option value="">Selecione</option>
                     {history.map((item) => (
                       <option key={`previous-${item.id}`} value={item.id}>
-                        {item.id}
+                        {item.id.slice(0, 8)} -{" "}
+                        {(item.initiative || "").slice(0, 30)}...
                       </option>
                     ))}
                   </select>
@@ -539,7 +551,9 @@ export default function App() {
           </div>
 
           <div className="dashboard-right">
-            {statusMessage && <div className="status success">{statusMessage}</div>}
+            {statusMessage && (
+              <div className="status success">{statusMessage}</div>
+            )}
             {error && <div className="status error">{error}</div>}
 
             <div className="card result-card">
@@ -615,7 +629,9 @@ export default function App() {
                           <strong>Motivo:</strong> {item.review_reason}
                         </div>
                       )}
-                      <div className="similar-snippet">{item.initiative_excerpt}</div>
+                      <div className="similar-snippet">
+                        {item.initiative_excerpt}
+                      </div>
                       <button
                         type="button"
                         className="link-button"

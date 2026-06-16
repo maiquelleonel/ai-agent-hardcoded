@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import Any
 
 
 class BaseAIService(ABC):
@@ -7,5 +8,5 @@ class BaseAIService(ABC):
         pass
 
     @abstractmethod
-    def generate_response(self, messages: list, **kwargs) -> str:
+    def generate_with_tools(self, messages: list, tools: list, **kwargs) -> Any:
         pass

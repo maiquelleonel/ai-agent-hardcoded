@@ -1,12 +1,13 @@
 import time
 from datetime import datetime
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from ai_agent import assess_initiative
-from requests import CompareRequest, InitiativeRequest
+from dtos import CompareRequest, InitiativeRequest
 from utils import (
     build_memory_summary,
     create_review_item,
@@ -28,6 +29,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+DB_FILE = Path("assessments.json")
 
 
 @app.post("/compare")
@@ -247,14 +250,21 @@ def root():
 
 @app.post("/assess")
 def assess(request: InitiativeRequest):
+    if not request.initiative or not request.initiative.strip():
+        raise HTTPException(status_code=400, detail="Iniciativa não pode ser vazia.")
+
     started = time.perf_counter()
     log_event("ASSESS_START", f"initiative_length={len(request.initiative)}")
 
     try:
+        log_event("ASSESS_TEXT", f"initiative={request.initiative}")
         similar_cases = find_similar_cases_hybrid(request.initiative)
+        log_event("ASSESS_SIMILAR_CASES", f"count={len(similar_cases)}")
         memory_summary = build_memory_summary(similar_cases)
+        log_event("ASSESS_MEMORY_SUMMARY", f"summary={memory_summary}")
 
         result = assess_initiative(request.initiative, similar_cases=similar_cases, memory_summary=memory_summary)
+        log_event("ASSESS_RESULT", f"result={result}")
 
         saved = save_assessment(request.initiative, result)
         review_item = create_review_item(saved)
