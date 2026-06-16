@@ -17,6 +17,9 @@ Este arquivo documenta as regras de arquitetura e convenções de desenvolviment
 
 ## 2. Padrões de Desenvolvimento
 
+### Respeito ao Código Existente
+- **Foco Cirúrgico**: Quando ajustes específicos forem solicitados, execute apenas o que foi pedido. Evite reformatar o código inteiro, aplicar otimizações não solicitadas ou remover comentários/logs inseridos pelo usuário, a menos que explicitamente instruído. Mantenha a integridade da implementação original.
+
 ### Tratamento de Tools (Adapters)
 - As ferramentas (`TOOLS` em `ai_agent.py`) são definidas como dicionários (formato compatível com a OpenAI).
 - Cada serviço (ex: `GeminiService`) deve implementar um **Adapter** interno no método `generate_with_tools` para traduzir esses dicionários para o formato específico da sua biblioteca.
