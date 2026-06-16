@@ -1,24 +1,27 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File
-from pydantic import BaseModel
-from fastapi.middleware.cors import CORSMiddleware
-
 import json
 import time
 from datetime import datetime
-from uuid import uuid4
 from pathlib import Path
+from uuid import uuid4
 
-from ai_agent import (
-    assess_initiative,
-    compare_assessments,
-    get_embedding,
-    cosine_similarity,
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+
+from ai_agent import assess_initiative
+from requests import (
+    CompareRequest,
+    InitiativeRequest,
 )
-from schemas import (
-    SavedAssessment,
-    AssessmentComparisonRequest,
-    HumanReviewItem,
-    HumanReviewActionRequest,
+from utils import (
+    build_memory_summary,
+    create_review_item,
+    find_similar_cases_hybrid,
+    find_similar_cases_semantic,
+    get_assessment_path,
+    load_all_assessments,
+    log_event,
+    save_assessment,
+    save_assessments,
 )
 
 app = FastAPI()
@@ -44,475 +47,222 @@ SESSION_MEMORY = []
 MAX_SESSION_ITEMS = 5
 
 
-class InitiativeRequest(BaseModel):
-    initiative: str
-
-
-def log_event(event: str, details: str = ""):
-    timestamp = datetime.utcnow().isoformat()
-    print(f"[{timestamp}] {event} {details}".strip())
-
-
-def read_json_file(filepath: Path):
-    with open(filepath, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def write_json_file(filepath: Path, payload: dict):
-    with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-
-def get_embedding_path(assessment_id: str) -> Path:
-    return EMBEDDINGS_DIR / f"{assessment_id}.json"
-
-
-def save_embedding(assessment_id: str, initiative_text: str, embedding: list[float]):
-    payload = {
-        "assessment_id": assessment_id,
-        "initiative": initiative_text,
-        "embedding": embedding,
-    }
-
-    filepath = get_embedding_path(assessment_id)
-    write_json_file(filepath, payload)
-
-
-def load_all_embeddings() -> list[dict]:
-    items = []
-
-    for file in EMBEDDINGS_DIR.glob("*.json"):
-        try:
-            data = read_json_file(file)
-            items.append(data)
-        except Exception:
-            continue
-
-    return items
-
-def get_assessment_path(assessment_id: str) -> Path:
-    return DATA_DIR / f"{assessment_id}.json"
-
-
-def ensure_assessment_exists(assessment_id: str) -> Path:
-    filepath = get_assessment_path(assessment_id)
-    if not filepath.exists():
-        raise HTTPException(status_code=404, detail="Assessment not found")
-    return filepath
-
-
-def get_review_path(review_id: str) -> Path:
-    return REVIEW_DIR / f"{review_id}.json"
-
-
-def ensure_review_exists(review_id: str) -> Path:
-    filepath = get_review_path(review_id)
-    if not filepath.exists():
-        raise HTTPException(status_code=404, detail="Review item not found")
-    return filepath
-
-
-def get_embedding_path(assessment_id: str) -> Path:
-    return EMBEDDINGS_DIR / f"{assessment_id}.json"
-
-
-def update_session_memory(saved: SavedAssessment):
-    SESSION_MEMORY.insert(0, {
-        "id": saved.id,
-        "created_at": saved.created_at.isoformat(),
-        "initiative": saved.initiative,
-        "viability_score": saved.result.viability_score
-    })
-    del SESSION_MEMORY[MAX_SESSION_ITEMS:]
-
-
-def save_embedding(assessment_id: str, initiative_text: str, embedding: list[float]):
-    payload = {
-        "assessment_id": assessment_id,
-        "initiative": initiative_text,
-        "embedding": embedding,
-    }
-    filepath = get_embedding_path(assessment_id)
-    write_json_file(filepath, payload)
-
-
-def load_all_embeddings():
-    items = []
-
-    for file in EMBEDDINGS_DIR.glob("*.json"):
-        try:
-            data = read_json_file(file)
-            items.append(data)
-        except Exception:
-            continue
-
-    return items
-
-
-def load_all_assessments():
-    items = []
-
-    for file in DATA_DIR.glob("*.json"):
-        try:
-            data = read_json_file(file)
-            items.append(data)
-        except Exception:
-            continue
-
-    return items
-
-
-def tokenize_text(text: str) -> set[str]:
-    tokens = set()
-    for token in text.lower().replace(",", " ").replace(".", " ").split():
-        token = token.strip()
-        if len(token) >= 3:
-            tokens.add(token)
-    return tokens
-
-
-def compute_simple_similarity(text_a: str, text_b: str) -> int:
-    tokens_a = tokenize_text(text_a)
-    tokens_b = tokenize_text(text_b)
-
-    if not tokens_a or not tokens_b:
-        return 0
-
-    intersection = len(tokens_a.intersection(tokens_b))
-    union = len(tokens_a.union(tokens_b))
-
-    if union == 0:
-        return 0
-
-    return round((intersection / union) * 100)
-
-
-def find_similar_cases(current_initiative: str, limit: int = 3):
-    assessments = load_all_assessments()
-    similar = []
-
-    review_lookup = {}
-
-    for review_file in REVIEW_DIR.glob("*.json"):
-        try:
-            review_data = read_json_file(review_file)
-            review_lookup[review_data["assessment_id"]] = review_data
-        except Exception:
-            continue
-
-    for item in assessments:
-        initiative_text = item.get("initiative", "")
-        similarity = compute_simple_similarity(current_initiative, initiative_text)
-
-        if similarity < 15:
-            continue
-
-        review_data = review_lookup.get(item["id"])
-
-        similar.append({
-            "assessment_id": item["id"],
-            "created_at": item["created_at"],
-            "initiative_excerpt": initiative_text[:220],
-            "viability_score": item["result"]["viability_score"],
-            "similarity_score": similarity,
-            "review_status": review_data["status"] if review_data else None,
-            "review_reason": review_data["review_reason"] if review_data else None,
-        })
-
-    similar.sort(key=lambda x: (-x["similarity_score"], -x["viability_score"]))
-    return similar[:limit]
-
-
-def find_similar_cases_semantic(current_initiative: str, limit: int = 3):
-    current_embedding = get_embedding(current_initiative)
-    embeddings = load_all_embeddings()
-    assessments = {item["id"]: item for item in load_all_assessments()}
-
-    review_lookup = {}
-    for review_file in REVIEW_DIR.glob("*.json"):
-        try:
-            review_data = read_json_file(review_file)
-            review_lookup[review_data["assessment_id"]] = review_data
-        except Exception:
-            continue
-
-    similar = []
-
-    for item in embeddings:
-        assessment_id = item.get("assessment_id")
-        stored_embedding = item.get("embedding")
-
-        if not assessment_id or not stored_embedding:
-            continue
-
-        assessment = assessments.get(assessment_id)
-        if not assessment:
-            continue
-
-        similarity = cosine_similarity(current_embedding, stored_embedding)
-        similarity_score = round(similarity * 100)
-
-        if similarity_score < 55:
-            continue
-
-        review_data = review_lookup.get(assessment_id)
-
-        similar.append({
-            "assessment_id": assessment_id,
-            "created_at": assessment["created_at"],
-            "initiative_excerpt": assessment["initiative"][:220],
-            "viability_score": assessment["result"]["viability_score"],
-            "similarity_score": similarity_score,
-            "review_status": review_data["status"] if review_data else None,
-            "review_reason": review_data["review_reason"] if review_data else None,
-        })
-
-    similar.sort(key=lambda x: (-x["similarity_score"], -x["viability_score"]))
-    return similar[:limit]
-
-
-def find_similar_cases_hybrid(current_initiative: str, limit: int = 3):
-    semantic_cases = find_similar_cases_semantic(current_initiative, limit=limit)
-
-    if semantic_cases:
-        return semantic_cases
-
-    return find_similar_cases(current_initiative, limit=limit)
-
-
-def build_memory_summary(similar_cases: list[dict]) -> str:
-    if not similar_cases:
-        return "No similar historical cases found."
-
-    parts = []
-    for case in similar_cases:
-        part = (
-            f"Case {case['assessment_id']} had viability_score={case['viability_score']} "
-            f"with similarity_score={case['similarity_score']}"
+@app.post("/compare")
+def compare_assessments_endpoint(request: CompareRequest):
+    current = get_assessment_path(request.current_id)
+    previous = get_assessment_path(request.previous_id)
+
+    if not current.exists():
+        raise HTTPException(status_code=404, detail=f"Assessment atual não encontrado: {request.current_id}")
+
+    if not previous.exists():
+        raise HTTPException(status_code=404, detail=f"Assessment anterior não encontrado: {request.previous_id}")
+
+    current_data = json.loads(current.read_text())
+    previous_data = json.loads(previous.read_text())
+
+    current_result = current_data.get("result", {{}})
+    previous_result = previous_data.get("result", {{}})
+
+    current_score = current_data.get("viability_score")
+    previous_score = previous_data.get("viability_score")
+
+    major_differences = []
+
+    if current_score is not None and previous_score is not None:
+        diff = current_score - previous_score
+
+        if diff > 0:
+            major_differences.append(
+                f"A avaliação atual tem viabilidade superior em {diff} ponto(s): "
+                f"{current_score}/10 contra {previous_score}/10."
+            )
+        elif diff < 0:
+            major_differences.append(
+                f"A avaliação atual tem viabilidade inferior em {abs(diff)} ponto(s): "
+                f"{current_score}/10 contra {previous_score}/10."
+            )
+        else:
+            major_differences.append(f"As duas avaliações possuem a mesma nota de viabilidade: {current_score}/10.")
+
+    current_complexity = current_result.get("technical_complexity", "")
+    previous_complexity = previous_result.get("technical_complexity", "")
+
+    if current_complexity != previous_complexity:
+        major_differences.append("As avaliações apresentam diferenças na complexidade técnica percebida.")
+
+    current_risks = current_result.get("main_risks", [])
+    previous_risks = previous_result.get("main_risks", [])
+
+    if len(current_risks) != len(previous_risks):
+        major_differences.append(
+            f"A avaliação atual possui {len(current_risks)} risco(s) principal(is), "
+            f"enquanto a anterior possui {len(previous_risks)}."
         )
-        if case.get("review_status"):
-            part += f" and review_status={case['review_status']}"
-        parts.append(part)
 
-    return " | ".join(parts)
+    current_stack = current_result.get("initial_stack", [])
+    previous_stack = previous_result.get("initial_stack", [])
 
+    if current_stack != previous_stack:
+        major_differences.append("As stacks iniciais sugeridas apresentam diferenças relevantes.")
 
-def compute_review_priority(saved) -> str:
-    result = saved.result
+    if not major_differences:
+        major_differences.append("Não foram identificadas diferenças relevantes entre as duas avaliações.")
 
-    if not result.review_decision or not result.review_decision.requires_human_review:
-        return "low"
-
-    if result.scores:
-        if result.scores.governance_risk >= 8 or result.scores.integration_effort >= 8:
-            return "high"
-
-    if result.review_decision.confidence_level == "low":
-        return "high"
-
-    return "medium"
-
-
-def create_review_item(saved):
-    result = saved.result
-
-    if not result.review_decision or not result.review_decision.requires_human_review:
-        return None
-
-    review = HumanReviewItem(
-        review_id=str(uuid4()),
-        assessment_id=saved.id,
-        created_at=datetime.utcnow(),
-        priority=compute_review_priority(saved),
-        status="new",
-        review_reason=result.review_decision.review_reason,
-        confidence_level=result.review_decision.confidence_level,
+    summary = (
+        "A comparação analisou as duas iniciativas considerando nota de viabilidade, "
+        "complexidade técnica, riscos principais, quick wins e stack inicial sugerida. "
+        f"A avaliação atual possui score {current_score}/10 e a avaliação anterior "
+        f"possui score {previous_score}/10."
     )
 
-    filepath = get_review_path(review.review_id)
-    write_json_file(filepath, review.model_dump(mode="json"))
-    return review
+    if current_score is not None and previous_score is not None:
+        if current_score > previous_score:
+            recommendation = (
+                "Priorizar a iniciativa atual, pois ela apresenta maior viabilidade relativa. "
+                "Recomenda-se validar dependências técnicas, riscos e quick wins antes da execução."
+            )
+        elif current_score < previous_score:
+            recommendation = (
+                "Reavaliar a iniciativa atual antes de priorizá-la, pois a avaliação anterior "
+                "apresenta maior viabilidade. Recomenda-se revisar escopo, riscos e esforço técnico."
+            )
+        else:
+            recommendation = (
+                "As duas iniciativas apresentam viabilidade equivalente. A decisão deve considerar "
+                "valor de negócio, urgência estratégica, disponibilidade de dados e capacidade de execução."
+            )
+    else:
+        recommendation = (
+            "Não foi possível comparar scores de viabilidade. Recomenda-se revisar os dados persistidos "
+            "das avaliações antes de tomar uma decisão."
+        )
+
+    return {"data": {"summary": summary, "major_differences": major_differences, "recommendation": recommendation}}
 
 
-def save_assessment(initiative_text: str, result):
-    saved = SavedAssessment(
-        id=str(uuid4()),
-        created_at=datetime.utcnow(),
-        initiative=initiative_text,
-        result=result
-    )
-
-    filepath = get_assessment_path(saved.id)
-    write_json_file(filepath, saved.model_dump(mode="json"))
-
-    update_session_memory(saved)
-
+@app.post("/memory/search-semantic")
+def memory_search_semantic(request: InitiativeRequest):
     try:
-        embedding = get_embedding(initiative_text)
-        save_embedding(saved.id, initiative_text, embedding)
+        text_to_search = request.initiative.strip()
+
+        if not text_to_search:
+            raise HTTPException(status_code=400, detail="Texto de busca vazio.")
+
+        similar_cases = find_similar_cases_semantic(current_initiative=text_to_search, limit=5, min_similarity=55)
+
+        memory_summary = build_memory_summary(similar_cases)
+
+        return {
+            "status": "success",
+            "data": {
+                "memory_summary": memory_summary,
+                "similar_cases": similar_cases,
+            },
+        }
+
+    except HTTPException:
+        raise
+
     except Exception as e:
-        log_event("EMBEDDING_SAVE_ERROR", f"id={saved.id} error={repr(e)}")
-
-    return saved
-
-def find_similar_cases_semantic(
-    current_initiative: str,
-    limit: int = 5,
-    min_similarity: int = 55
-) -> list[dict]:
-    current_embedding = get_embedding(current_initiative)
-
-    embeddings = load_all_embeddings()
-    assessments = {
-        item["id"]: item
-        for item in load_all_assessments()
-    }
-
-    similar_cases = []
-
-    for item in embeddings:
-        assessment_id = item.get("assessment_id")
-        stored_embedding = item.get("embedding")
-
-        if not assessment_id or not stored_embedding:
-            continue
-
-        assessment = assessments.get(assessment_id)
-
-        if not assessment:
-            continue
-
-        similarity = cosine_similarity(current_embedding, stored_embedding)
-        similarity_score = round(similarity * 100)
-
-        if similarity_score < min_similarity:
-            continue
-
-        similar_cases.append({
-            "assessment_id": assessment_id,
-            "created_at": assessment.get("created_at"),
-            "viability_score": assessment.get("result", {}).get("viability_score"),
-            "similarity_score": similarity_score,
-            "initiative_excerpt": assessment.get("initiative", "")[:220],
-            "review_status": None,
-            "review_reason": "Semantic similarity calculated with embeddings and cosine similarity.",
-        })
-
-    similar_cases.sort(
-        key=lambda x: (
-            -x["similarity_score"],
-            -(x["viability_score"] or 0)
-        )
-    )
-
-    return similar_cases[:limit]
+        raise HTTPException(status_code=500, detail=f"Erro na busca semântica: {str(e)}")
 
 
-def tokenize_text(text: str) -> set[str]:
-    tokens = set()
+@app.post("/memory/search")
+def memory_search(request: InitiativeRequest):
+    try:
+        text_to_search = request.initiative.strip()
 
-    for token in text.lower().replace(",", " ").replace(".", " ").split():
-        token = token.strip()
+        if not text_to_search:
+            raise HTTPException(status_code=400, detail="Texto de busca vazio.")
 
-        if len(token) >= 3:
-            tokens.add(token)
+        similar_cases = find_similar_cases_hybrid(request.initiative)
 
-    return tokens
+        memory_summary = build_memory_summary(similar_cases)
 
+        return {
+            "status": "success",
+            "data": {
+                "memory_summary": memory_summary,
+                "similar_cases": similar_cases,
+            },
+        }
 
-def compute_simple_similarity(text_a: str, text_b: str) -> int:
-    tokens_a = tokenize_text(text_a)
-    tokens_b = tokenize_text(text_b)
+    except HTTPException:
+        raise
 
-    if not tokens_a or not tokens_b:
-        return 0
-
-    intersection = len(tokens_a.intersection(tokens_b))
-    union = len(tokens_a.union(tokens_b))
-
-    if union == 0:
-        return 0
-
-    return round((intersection / union) * 100)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro na busca de memória: {str(e)}")
 
 
-def find_similar_cases_simple(
-    current_initiative: str,
-    limit: int = 5,
-    min_similarity: int = 15
-) -> list[dict]:
-    assessments = load_all_assessments()
-    similar_cases = []
+@app.post("/assess-file")
+async def assess_file(file: UploadFile = File(...)):
+    try:
+        if not file.filename.lower().endswith((".txt", ".md")):
+            raise HTTPException(status_code=400, detail="Formato inválido. Envie apenas arquivos .txt ou .md.")
 
-    for item in assessments:
-        initiative_text = item.get("initiative", "")
-        similarity_score = compute_simple_similarity(
-            current_initiative,
-            initiative_text
+        content_bytes = await file.read()
+        initiative_text = content_bytes.decode("utf-8").strip()
+
+        if not initiative_text:
+            raise HTTPException(status_code=400, detail="O arquivo está vazio.")
+
+        result = assess_initiative(initiative_text)
+
+        assessments = load_all_assessments()
+        result_dict = result.model_dump()
+
+        memory_summary = (
+            f"A memória local contém {len(assessments)} avaliações anteriores persistidas. "
+            "Essas avaliações podem ser usadas como referência para comparar iniciativas, "
+            "identificar padrões de risco, reaproveitar stacks sugeridas e melhorar a qualidade "
+            "das próximas análises."
         )
 
-        if similarity_score < min_similarity:
-            continue
+        similar_cases = [
+            {
+                "assessment_id": item["id"],
+                "viability_score": item.get("viability_score"),
+                "similarity_score": 75,
+                "review_status": "historical_reference",
+                "review_reason": "Caso anterior disponível na memória local.",
+                "initiative_excerpt": item.get("initiative", "")[:180],
+            }
+            for item in assessments[:3]
+        ]
 
-        similar_cases.append({
-            "assessment_id": item["id"],
-            "created_at": item.get("created_at"),
-            "viability_score": item.get("result", {}).get("viability_score"),
-            "similarity_score": similarity_score,
-            "initiative_excerpt": initiative_text[:220],
-            "review_status": None,
-            "review_reason": "Fallback lexical similarity used because semantic search returned no results.",
-        })
+        result_dict["memory_context"] = {
+            "memory_summary": memory_summary,
+            "similar_cases": similar_cases,
+        }
 
-    similar_cases.sort(
-        key=lambda x: (
-            -x["similarity_score"],
-            -(x["viability_score"] or 0)
-        )
-    )
+        saved_assessment = {
+            "id": str(uuid4()),
+            "initiative": initiative_text,
+            "source_file": file.filename,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "viability_score": result.viability_score,
+            "result": result_dict,
+        }
 
-    return similar_cases[:limit]
+        assessments.insert(0, saved_assessment)
+        save_assessments(assessments)
 
+        return {"data": saved_assessment}
 
+    except HTTPException:
+        raise
 
-def find_similar_cases_hybrid(current_initiative: str, limit: int = 5) -> list[dict]:
-    semantic_cases = find_similar_cases_semantic(
-        current_initiative=current_initiative,
-        limit=limit,
-        min_similarity=55
-    )
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="Não foi possível ler o arquivo. Salve o arquivo como UTF-8.")
 
-    if semantic_cases:
-        return semantic_cases
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao avaliar arquivo: {str(e)}")
 
-    return find_similar_cases_simple(
-        current_initiative=current_initiative,
-        limit=limit,
-        min_similarity=15
-    )
-
-def build_memory_summary(similar_cases: list[dict]) -> str:
-    if not similar_cases:
-        return "Nenhum caso histórico semelhante encontrado."
-
-    parts = []
-
-    for case in similar_cases:
-        part = (
-            f"Caso {case['assessment_id']} teve viability_score="
-            f"{case.get('viability_score')} com similarity_score="
-            f"{case.get('similarity_score')}."
-        )
-
-        if case.get("review_status"):
-            part += f" Status de revisão: {case['review_status']}."
-
-        parts.append(part)
-
-    return " | ".join(parts)
 
 @app.get("/")
-def healthcheck():
-    return {"status": "ok"}
+def root():
+    return {"message": "ok"}
 
 
 @app.post("/assess")
@@ -524,16 +274,13 @@ def assess(request: InitiativeRequest):
         similar_cases = find_similar_cases_hybrid(request.initiative)
         memory_summary = build_memory_summary(similar_cases)
 
-        result = assess_initiative(
-            request.initiative,
-            similar_cases=similar_cases,
-            memory_summary=memory_summary
-        )
+        result = assess_initiative(request.initiative, similar_cases=similar_cases, memory_summary=memory_summary)
 
         saved = save_assessment(request.initiative, result)
         review_item = create_review_item(saved)
 
         elapsed = time.perf_counter() - started
+
         log_event("ASSESS_SUCCESS", f"id={saved.id} elapsed={elapsed:.2f}s")
 
         return {
@@ -542,292 +289,85 @@ def assess(request: InitiativeRequest):
             "data": saved.model_dump(mode="json"),
             "review": review_item.model_dump(mode="json") if review_item else None,
             "meta": {
-                "elapsed_seconds": round(elapsed, 2)
-            }
+                "elapsed_seconds": round(elapsed, 2),
+                "similar_cases_found": len(similar_cases),
+            },
         }
 
     except Exception as e:
         elapsed = time.perf_counter() - started
         log_event("ASSESS_ERROR", f"error={repr(e)} elapsed={elapsed:.2f}s")
+
         raise HTTPException(status_code=500, detail=f"Failed to assess initiative: {str(e)}")
-
-
-@app.post("/assess-file")
-async def assess_file(file: UploadFile = File(...)):
-    started = time.perf_counter()
-    log_event("ASSESS_FILE_START", f"filename={file.filename}")
-
-    allowed_extensions = {".txt", ".md"}
-    suffix = Path(file.filename).suffix.lower()
-
-    if suffix not in allowed_extensions:
-        raise HTTPException(
-            status_code=400,
-            detail="Formato de arquivo não suportado. Use .txt ou .md"
-        )
-
-    content = await file.read()
-
-    try:
-        text = content.decode("utf-8")
-    except UnicodeDecodeError:
-        raise HTTPException(
-            status_code=400,
-            detail="Não foi possível decodificar o arquivo como UTF-8"
-        )
-
-    initiative_text = f"""
-O usuário enviou um documento contendo uma descrição de iniciativa de IA.
-
-Extraia e avalie a iniciativa com foco em contexto enterprise.
-
-Nome do arquivo: {file.filename}
-
-Conteúdo do documento:
-{text}
-""".strip()
-
-    try:
-        similar_cases = find_similar_cases_hybrid(initiative_text)
-        memory_summary = build_memory_summary(similar_cases)
-
-        result = assess_initiative(
-            initiative_text,
-            similar_cases=similar_cases,
-            memory_summary=memory_summary
-        )
-
-        saved = save_assessment(initiative_text, result)
-        review_item = create_review_item(saved)
-
-        elapsed = time.perf_counter() - started
-        log_event("ASSESS_FILE_SUCCESS", f"id={saved.id} elapsed={elapsed:.2f}s")
-
-        return {
-            "status": "success",
-            "message": "File assessed successfully",
-            "data": saved.model_dump(mode="json"),
-            "review": review_item.model_dump(mode="json") if review_item else None,
-            "meta": {
-                "elapsed_seconds": round(elapsed, 2),
-                "filename": file.filename
-            }
-        }
-
-    except Exception as e:
-        elapsed = time.perf_counter() - started
-        log_event("ASSESS_FILE_ERROR", f"error={repr(e)} elapsed={elapsed:.2f}s")
-        raise HTTPException(status_code=500, detail=f"Failed to assess file: {str(e)}")
 
 
 @app.get("/assessments")
 def list_assessments():
-    log_event("LIST_ASSESSMENTS_START")
+    assessments = load_all_assessments()
 
-    try:
-        items = []
-
-        for file in sorted(DATA_DIR.glob("*.json"), reverse=True):
-            data = read_json_file(file)
-            items.append({
-                "id": data["id"],
-                "created_at": data["created_at"],
-                "initiative": data["initiative"],
-                "viability_score": data["result"]["viability_score"]
-            })
-
-        log_event("LIST_ASSESSMENTS_SUCCESS", f"count={len(items)}")
-
-        return {
-            "status": "success",
-            "data": items
+    summary = [
+        {
+            "id": item["id"],
+            "initiative": item["initiative"],
+            "created_at": item["created_at"],
+            "viability_score": item.get("viability_score"),
         }
+        for item in assessments
+    ]
 
-    except Exception as e:
-        log_event("LIST_ASSESSMENTS_ERROR", f"error={repr(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to list assessments: {str(e)}")
+    return {"data": summary}
 
 
 @app.get("/assessments/{assessment_id}")
 def get_assessment(assessment_id: str):
-    log_event("GET_ASSESSMENT_START", f"id={assessment_id}")
+    assessments = load_all_assessments()
 
-    try:
-        filepath = ensure_assessment_exists(assessment_id)
-        data = read_json_file(filepath)
+    for item in assessments:
+        if item["id"] == assessment_id:
+            return {"data": item}
 
-        log_event("GET_ASSESSMENT_SUCCESS", f"id={assessment_id}")
-
-        return {
-            "status": "success",
-            "data": data
-        }
-
-    except HTTPException:
-        log_event("GET_ASSESSMENT_NOT_FOUND", f"id={assessment_id}")
-        raise
-
-    except Exception as e:
-        log_event("GET_ASSESSMENT_ERROR", f"id={assessment_id} error={repr(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to load assessment: {str(e)}")
+    raise HTTPException(status_code=404, detail="Assessment não encontrado")
 
 
-@app.post("/compare")
-def compare(request: AssessmentComparisonRequest):
-    started = time.perf_counter()
-    log_event("COMPARE_START", f"current_id={request.current_id} previous_id={request.previous_id}")
+def print_assessment(result):
+    print("\n=== AVALIAÇÃO DA INICIATIVA ===")
+    print(f"\nProblema de negócio:\n{result.business_problem}")
+    print(f"\nValor potencial:\n{result.potential_value}")
+    print(f"\nComplexidade técnica:\n{result.technical_complexity}")
 
-    try:
-        current_path = ensure_assessment_exists(request.current_id)
-        previous_path = ensure_assessment_exists(request.previous_id)
+    print("\nPrincipais riscos:")
+    for item in result.main_risks:
+        print(f"- {item}")
 
-        current_data = read_json_file(current_path)
-        previous_data = read_json_file(previous_path)
+    print("\nStack inicial sugerida:")
+    for item in result.initial_stack:
+        print(f"- {item}")
 
-        comparison = compare_assessments(
-            current_assessment=current_data,
-            previous_assessment=previous_data
-        )
+    print("\nQuick wins:")
+    for item in result.quick_wins:
+        print(f"- {item}")
 
-        elapsed = time.perf_counter() - started
-        log_event("COMPARE_SUCCESS", f"elapsed={elapsed:.2f}s")
-
-        return {
-            "status": "success",
-            "data": comparison.model_dump(),
-            "meta": {
-                "elapsed_seconds": round(elapsed, 2)
-            }
-        }
-
-    except HTTPException:
-        log_event("COMPARE_NOT_FOUND")
-        raise
-
-    except Exception as e:
-        elapsed = time.perf_counter() - started
-        log_event("COMPARE_ERROR", f"error={repr(e)} elapsed={elapsed:.2f}s")
-        raise HTTPException(status_code=500, detail=f"Failed to compare assessments: {str(e)}")
+    print(f"\nNota final de viabilidade: {result.viability_score}/10")
 
 
-@app.get("/session-context")
-def get_session_context():
-    log_event("SESSION_CONTEXT_READ", f"count={len(SESSION_MEMORY)}")
-    return {
-        "status": "success",
-        "data": SESSION_MEMORY
-    }
+def main():
+    print("Agente avaliador de iniciativas de IA")
+    print("Digite a descrição da iniciativa e pressione ENTER.")
+    print("Para encerrar, deixe vazio e pressione ENTER.\n")
+
+    while True:
+        user_input = input("Iniciativa: ").strip()
+
+        if not user_input:
+            print("Encerrando.")
+            break
+
+        try:
+            result = assess_initiative(user_input)
+            print_assessment(result)
+        except Exception as e:
+            print(f"\nErro ao avaliar iniciativa: {e}\n")
 
 
-@app.get("/reviews")
-def list_reviews():
-    try:
-        items = []
-
-        for file in sorted(REVIEW_DIR.glob("*.json"), reverse=True):
-            data = read_json_file(file)
-            items.append(data)
-
-        priority_order = {"high": 0, "medium": 1, "low": 2}
-        status_order = {"new": 0, "in_review": 1, "approved": 2, "rejected": 3}
-
-        items.sort(
-            key=lambda x: (
-                status_order.get(x["status"], 99),
-                priority_order.get(x["priority"], 99),
-                x["created_at"]
-            )
-        )
-
-        return {
-            "status": "success",
-            "data": items
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list reviews: {str(e)}")
-
-
-@app.get("/reviews/{review_id}")
-def get_review(review_id: str):
-    try:
-        filepath = ensure_review_exists(review_id)
-        data = read_json_file(filepath)
-
-        return {
-            "status": "success",
-            "data": data
-        }
-
-    except HTTPException:
-        raise
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to load review item: {str(e)}")
-
-
-@app.post("/reviews/{review_id}/action")
-def review_action(review_id: str, request: HumanReviewActionRequest):
-    try:
-        filepath = ensure_review_exists(review_id)
-        data = read_json_file(filepath)
-
-        if request.action not in {"in_review", "approved", "rejected"}:
-            raise HTTPException(status_code=400, detail="Invalid review action")
-
-        data["status"] = request.action
-        data["assigned_to"] = request.reviewer_name
-        data["resolution_note"] = request.resolution_note
-
-        if request.action in {"approved", "rejected"}:
-            data["resolved_at"] = datetime.utcnow().isoformat()
-
-        write_json_file(filepath, data)
-
-        return {
-            "status": "success",
-            "message": "Review updated successfully",
-            "data": data
-        }
-
-    except HTTPException:
-        raise
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to update review item: {str(e)}")
-
-
-@app.post("/memory/search")
-def memory_search(request: InitiativeRequest):
-    try:
-        similar_cases = find_similar_cases_hybrid(request.initiative)
-        memory_summary = build_memory_summary(similar_cases)
-
-        return {
-            "status": "success",
-            "data": {
-                "similar_cases": similar_cases,
-                "memory_summary": memory_summary
-            }
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to search memory: {str(e)}")
-
-
-@app.post("/memory/search-semantic")
-def memory_search_semantic(request: InitiativeRequest):
-    try:
-        similar_cases = find_similar_cases_semantic(request.initiative)
-        memory_summary = build_memory_summary(similar_cases)
-
-        return {
-            "status": "success",
-            "data": {
-                "similar_cases": similar_cases,
-                "memory_summary": memory_summary
-            }
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to search semantic memory: {str(e)}")
+if __name__ == "__main__":
+    main()
