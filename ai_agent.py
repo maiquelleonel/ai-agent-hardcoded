@@ -1,9 +1,5 @@
 import json
-import os
 from typing import Any, Dict
-
-from dotenv import load_dotenv
-from openai import OpenAI
 
 from prompts import SYSTEM_PROMPT
 from schemas import (
@@ -16,15 +12,15 @@ from schemas import (
     ScoreExplanation,
     SimilarCase,
 )
+from services.factory import get_ai_service
 from utils import (
     detect_initiative_type,
     get_common_risks,
     get_recommended_stack,
 )
 
-load_dotenv()
-MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-5")
-client = OpenAI()
+# Inicializa o serviço de IA configurado via ENV
+ai_service = get_ai_service()
 
 TOOLS = [
     {
@@ -66,20 +62,16 @@ TOOLS = [
 def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
     if tool_name == "detect_initiative_type":
         return detect_initiative_type(arguments["description"])
-
     if tool_name == "get_recommended_stack":
         return get_recommended_stack(arguments["initiative_type"])
-
     if tool_name == "get_common_risks":
         return get_common_risks(arguments["initiative_type"])
-
     raise ValueError(f"Tool desconhecida: {tool_name}")
 
 
 def normalize_response(data: dict) -> dict:
     if isinstance(data.get("potential_value"), list):
         data["potential_value"] = " ".join(str(item) for item in data["potential_value"])
-
     if isinstance(data.get("initial_stack"), dict):
         flattened = []
         for key, value in data["initial_stack"].items():
@@ -88,46 +80,23 @@ def normalize_response(data: dict) -> dict:
             else:
                 flattened.append(f"{key}: {value}")
         data["initial_stack"] = flattened
-
     if isinstance(data.get("main_risks"), str):
         data["main_risks"] = [data["main_risks"]]
-
     if isinstance(data.get("quick_wins"), str):
         data["quick_wins"] = [data["quick_wins"]]
-
     return data
 
 
 def normalize_parsed_initiative(data: dict) -> dict:
-    list_fields = [
-        "target_users",
-        "required_data",
-        "integrations",
-        "constraints",
-        "regulatory_risks",
-    ]
-
+    list_fields = ["target_users", "required_data", "integrations", "constraints", "regulatory_risks"]
     for field in list_fields:
         if isinstance(data.get(field), str):
             data[field] = [data[field]]
-
     return data
 
 
-def extract_tool_calls(response) -> list[dict]:
-    tool_calls = []
-
-    for item in response.choices[0].message.tool_calls:
-        tool_calls.append(
-            {"call_id": item.id, "name": item.function.name, "arguments": json.loads(item.function.arguments)}
-        )
-
-    return tool_calls
-
-
 def parse_initiative_description(initiative_description: str) -> ParsedInitiative:
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
+    content = ai_service.generate_response(
         messages=[
             {"role": "system", "content": "Responda apenas em JSON válido."},
             {
@@ -137,17 +106,16 @@ def parse_initiative_description(initiative_description: str) -> ParsedInitiativ
         ],
         response_format={"type": "json_object"},
     )
-
-    raw_text = response.choices[0].message.content
-    data = json.loads(raw_text)
+    data = json.loads(content)
     data = normalize_parsed_initiative(data)
-
     return ParsedInitiative.model_validate(data)
 
 
 def run_tool_phase(initiative_description: str, memory_summary: str = ""):
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
+    # Nota: A Service Layer precisa ser adaptada para suportar tool calls explicitamente
+    # se quisermos ser 100% agnósticos. Por enquanto, a OpenAIService suporta tool_calls.
+    return ai_service.client.chat.completions.create(
+        model=ai_service.model,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {
@@ -157,12 +125,10 @@ def run_tool_phase(initiative_description: str, memory_summary: str = ""):
         ],
         tools=TOOLS,
     )
-    return response
 
 
 def run_final_phase(initiative_description: str, tool_context: dict, retry_count: int = 0) -> InitiativeAssessment:
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
+    content = ai_service.generate_response(
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {
@@ -172,15 +138,11 @@ def run_final_phase(initiative_description: str, tool_context: dict, retry_count
         ],
         response_format={"type": "json_object"},
     )
-
-    raw_text = response.choices[0].message.content
-    data = json.loads(raw_text)
+    data = json.loads(content)
     data = normalize_response(data)
-
     assessment = InitiativeAssessment.model_validate(data)
     if not 0 <= assessment.viability_score <= 10:
         raise ValueError("viability_score fora do intervalo (0-10).")
-
     return assessment
 
 
@@ -197,8 +159,7 @@ def compute_overall_viability(scores: AssessmentScores) -> int:
 
 
 def score_initiative(parsed: ParsedInitiative, tool_context: dict) -> AssessmentScores:
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
+    content = ai_service.generate_response(
         messages=[
             {"role": "system", "content": "Responda apenas em JSON válido."},
             {
@@ -208,8 +169,7 @@ def score_initiative(parsed: ParsedInitiative, tool_context: dict) -> Assessment
         ],
         response_format={"type": "json_object"},
     )
-
-    data = json.loads(response.choices[0].message.content)
+    data = json.loads(content)
     scores = AssessmentScores.model_validate(data)
     scores.overall_viability = compute_overall_viability(scores)
     return scores
@@ -230,7 +190,6 @@ def apply_deterministic_rules(
             )
 
     text_blob = " ".join([parsed.business_problem, parsed.expected_value, parsed.summary]).lower()
-
     if any(term in text_blob for term in ["lgpd", "gdpr", "dados pessoais"]):
         adjust("governance_risk", +2, "A iniciativa menciona dados pessoais ou regulação de privacidade.")
 
@@ -244,10 +203,8 @@ def decide_human_review(parsed: ParsedInitiative, scores: AssessmentScores) -> R
         reasons.append("High governance risk")
     if scores.integration_effort >= 8:
         reasons.append("High integration effort")
-
     if reasons:
         return ReviewDecision(requires_human_review=True, confidence_level="medium", review_reason="; ".join(reasons))
-
     return ReviewDecision(requires_human_review=False, confidence_level="high", review_reason="No critical flags")
 
 
@@ -256,13 +213,11 @@ def assess_initiative(
 ) -> InitiativeAssessment:
     if similar_cases is None:
         similar_cases = []
-
     parsed = parse_initiative_description(initiative_description)
     _ = run_tool_phase(initiative_description, memory_summary)
 
-    # Simulação da execução das tools...
+    # Execução das tools (simulada)
     tool_context = {"parsed_initiative": parsed.model_dump()}
-    # (Adicione aqui a execução real das tools se necessário)
 
     scores = score_initiative(parsed, tool_context)
     scores, score_explanations = apply_deterministic_rules(parsed, scores)
@@ -281,8 +236,7 @@ def assess_initiative(
 
 
 def compare_assessments(current_assessment: dict, previous_assessment: dict) -> AssessmentComparisonResult:
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
+    content = ai_service.generate_response(
         messages=[
             {"role": "system", "content": "Responda apenas em JSON válido."},
             {
@@ -292,5 +246,5 @@ def compare_assessments(current_assessment: dict, previous_assessment: dict) -> 
         ],
         response_format={"type": "json_object"},
     )
-    data = json.loads(response.choices[0].message.content)
+    data = json.loads(content)
     return AssessmentComparisonResult.model_validate(data)
