@@ -52,6 +52,7 @@ O projeto não é apenas um chatbot. Ele implementa vários conceitos reais de A
 - Uvicorn
 - OpenAI API
 - Pydantic
+- uv (Gerenciamento de pacotes)
 - python-dotenv
 - JSON local storage
 - OpenAI Embeddings
@@ -60,6 +61,7 @@ O projeto não é apenas um chatbot. Ele implementa vários conceitos reais de A
 
 - React
 - Vite
+- bun (Gerenciamento de pacotes e execução)
 - JavaScript / JSX
 - CSS
 - Fetch API
@@ -69,26 +71,22 @@ O projeto não é apenas um chatbot. Ele implementa vários conceitos reais de A
 ## 4. Estrutura do projeto
 
 ```text
-ai-agent-bootcamp/
+ai-agent-hardcoded/
 │
 ├── ai_agent.py              # Núcleo do agente
 ├── main.py                  # Backend FastAPI principal
-├── app.py                   # Versão anterior/simplificada do backend
+├── utils.py                 # Funções utilitárias e constantes
+├── constants.py             # Definições centrais
+├── requests.py              # Schemas de Request
+├── schemas.py               # Schemas de Dados
 ├── prompts.py               # Prompt de sistema
-├── schemas.py               # Schemas Pydantic
-├── tools.py                 # Tools determinísticas usadas pelo agente
-├── requirements.txt         # Dependências Python
-├── .env                     # Variáveis de ambiente locais
-├── .gitignore
-│
-├── data/
-│   ├── assessments/         # Avaliações persistidas
-│   ├── embeddings/          # Embeddings salvos
-│   └── reviews/             # Itens de revisão humana
-│
-└── frontend/
+├── pyproject.toml           # Configuração uv
+├── uv.lock                  # Lock file uv
+├── .env                     # Variáveis de ambiente
+├── data/                    # Storage local
+└── frontend/                # Frontend (React + Vite)
     ├── package.json
-    ├── src/
+    ├── bun.lock             # Lock file bun
     └── ...
 ```
 
@@ -99,203 +97,35 @@ ai-agent-bootcamp/
 ### 5.1. Clonar o projeto
 
 ```bash
-git clone https://github.com/klaubersantos/ai-agent-bootcamp.git
-cd ai-agent-bootcamp
+git clone <url-do-repositorio>
+cd ai-agent-hardcoded
 ```
 
 ---
 
 ## 6. Configuração do backend
 
-### 6.1. Criar ambiente virtual
+### 6.1. Instalar dependências e rodar
 
-No Windows PowerShell:
+Utilizamos o `uv` para o gerenciamento de pacotes.
 
-```powershell
-python -m venv .venv
+```bash
+uv sync
+uv run uvicorn main:app --reload
 ```
 
-Ativar o ambiente virtual:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-Se o PowerShell bloquear a ativação da venv, execute:
-
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-```
-
-Depois tente ativar novamente:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
----
-
-### 6.2. Instalar dependências
-
-```powershell
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-```
-
-Caso precise instalar manualmente:
-
-```powershell
-python -m pip install fastapi uvicorn python-multipart openai python-dotenv pydantic
-```
-
----
-
-### 6.3. Configurar variáveis de ambiente
-
-Crie um arquivo `.env` na raiz do projeto:
-
-```env
-OPENAI_API_KEY=sua_chave_da_openai_aqui
-OPENAI_MODEL=gpt-5
-```
-
-Importante: não suba o arquivo `.env` para o GitHub.
-
-Confirme que o `.gitignore` contém:
-
-```gitignore
-.env
-.venv/
-venv/
-__pycache__/
-*.pyc
-data/
-```
-
----
-
-### 6.4. Rodar o backend
-
-Na raiz do projeto, com a venv ativada:
-
-```powershell
-python -m uvicorn main:app --reload
-```
-
-O backend ficará disponível em:
-
-```text
-http://127.0.0.1:8000
-```
-
-Documentação automática da API:
-
-```text
-http://127.0.0.1:8000/docs
-```
-
-Healthcheck:
-
-```text
-http://127.0.0.1:8000/
-```
-
-Resposta esperada:
-
-```json
-{
-  "status": "ok"
-}
-```
+O backend ficará disponível em `http://127.0.0.1:8000`.
 
 ---
 
 ## 7. Configuração do frontend
 
-Abra um segundo terminal.
+Abra um novo terminal na pasta `frontend`:
 
-Entre na pasta do frontend:
-
-```powershell
+```bash
 cd frontend
+bun install
+bun run dev
 ```
 
-Instale as dependências:
-
-```powershell
-npm install
-```
-
-Rode o frontend:
-
-```powershell
-npm run dev
-```
-
-O frontend normalmente ficará disponível em:
-
-```text
-http://localhost:5173
-```
-
-ou:
-
-```text
-http://127.0.0.1:5173
-```
-
----
-
-## 8. Como rodar backend e frontend juntos
-
-Use dois terminais.
-
-### Terminal 1 — Backend
-
-```powershell
-cd "C:\Users\klaub\Documents\Python Scripts\ai-agent-bootcamp"
-.\.venv\Scripts\Activate.ps1
-python -m uvicorn main:app --reload
-```
-
-### Terminal 2 — Frontend
-
-```powershell
-cd "C:\Users\klaub\Documents\Python Scripts\ai-agent-bootcamp\frontend"
-npm install
-npm run dev
-```
-
-Depois abra no navegador:
-
-```text
-http://localhost:5173
-```
-
----
-
-## 9. Principais endpoints do backend
-
-### Healthcheck
-
-```http
-GET /
-```
-
----
-
-### Avaliar uma iniciativa
-
-```http
-POST /assess
-```
-
-Exemplo de payload:
-
-```json
-{
-  "initiative": "Criar um assistente de IA para responder dúvidas internas dos colaboradores sobre políticas de RH."
-}
-```
-
----
+O frontend ficará disponível em `http://localhost:5173`.
