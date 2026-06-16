@@ -258,7 +258,7 @@ def assess_initiative(
         similar_cases = []
 
     parsed = parse_initiative_description(initiative_description)
-    tool_response = run_tool_phase(initiative_description, memory_summary)
+    _ = run_tool_phase(initiative_description, memory_summary)
 
     # Simulação da execução das tools...
     tool_context = {"parsed_initiative": parsed.model_dump()}
