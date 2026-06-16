@@ -1,15 +1,23 @@
-import json
+import time
 from datetime import datetime
-from pathlib import Path
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-
 
 from ai_agent import assess_initiative
-
+from requests import CompareRequest, InitiativeRequest
+from utils import (
+    build_memory_summary,
+    create_review_item,
+    find_assessment_by_id,
+    find_similar_cases_hybrid,
+    find_similar_cases_semantic,
+    load_all_assessments,
+    log_event,
+    save_assessment,
+    save_assessments,
+)
 
 app = FastAPI()
 
@@ -21,24 +29,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DB_FILE = Path("assessments.json")
-
-
-class AssessRequest(BaseModel):
-    initiative: str
-
-class CompareRequest(BaseModel):
-    current_id: str
-    previous_id: str
-
-def find_assessment_by_id(assessment_id: str):
-    assessments = load_assessments()
-
-    for item in assessments:
-        if item["id"] == assessment_id:
-            return item
-
-    return None
 
 @app.post("/compare")
 def compare_assessments(request: CompareRequest):
@@ -46,16 +36,10 @@ def compare_assessments(request: CompareRequest):
     previous = find_assessment_by_id(request.previous_id)
 
     if not current:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Assessment atual não encontrado: {request.current_id}"
-        )
+        raise HTTPException(status_code=404, detail=f"Assessment atual não encontrado: {request.current_id}")
 
     if not previous:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Assessment anterior não encontrado: {request.previous_id}"
-        )
+        raise HTTPException(status_code=404, detail=f"Assessment anterior não encontrado: {request.previous_id}")
 
     current_result = current.get("result", {})
     previous_result = previous.get("result", {})
@@ -79,17 +63,13 @@ def compare_assessments(request: CompareRequest):
                 f"{current_score}/10 contra {previous_score}/10."
             )
         else:
-            major_differences.append(
-                f"As duas avaliações possuem a mesma nota de viabilidade: {current_score}/10."
-            )
+            major_differences.append(f"As duas avaliações possuem a mesma nota de viabilidade: {current_score}/10.")
 
     current_complexity = current_result.get("technical_complexity", "")
     previous_complexity = previous_result.get("technical_complexity", "")
 
     if current_complexity != previous_complexity:
-        major_differences.append(
-            "As avaliações apresentam diferenças na complexidade técnica percebida."
-        )
+        major_differences.append("As avaliações apresentam diferenças na complexidade técnica percebida.")
 
     current_risks = current_result.get("main_risks", [])
     previous_risks = previous_result.get("main_risks", [])
@@ -104,14 +84,10 @@ def compare_assessments(request: CompareRequest):
     previous_stack = previous_result.get("initial_stack", [])
 
     if current_stack != previous_stack:
-        major_differences.append(
-            "As stacks iniciais sugeridas apresentam diferenças relevantes."
-        )
+        major_differences.append("As stacks iniciais sugeridas apresentam diferenças relevantes.")
 
     if not major_differences:
-        major_differences.append(
-            "Não foram identificadas diferenças relevantes entre as duas avaliações."
-        )
+        major_differences.append("Não foram identificadas diferenças relevantes entre as duas avaliações.")
 
     summary = (
         "A comparação analisou as duas iniciativas considerando nota de viabilidade, "
@@ -142,13 +118,8 @@ def compare_assessments(request: CompareRequest):
             "das avaliações antes de tomar uma decisão."
         )
 
-    return {
-        "data": {
-            "summary": summary,
-            "major_differences": major_differences,
-            "recommendation": recommendation
-        }
-    }
+    return {"data": {"summary": summary, "major_differences": major_differences, "recommendation": recommendation}}
+
 
 @app.post("/memory/search-semantic")
 def memory_search_semantic(request: InitiativeRequest):
@@ -156,16 +127,9 @@ def memory_search_semantic(request: InitiativeRequest):
         text_to_search = request.initiative.strip()
 
         if not text_to_search:
-            raise HTTPException(
-                status_code=400,
-                detail="Texto de busca vazio."
-            )
+            raise HTTPException(status_code=400, detail="Texto de busca vazio.")
 
-        similar_cases = find_similar_cases_semantic(
-            current_initiative=text_to_search,
-            limit=5,
-            min_similarity=55
-        )
+        similar_cases = find_similar_cases_semantic(current_initiative=text_to_search, limit=5, min_similarity=55)
 
         memory_summary = build_memory_summary(similar_cases)
 
@@ -174,17 +138,15 @@ def memory_search_semantic(request: InitiativeRequest):
             "data": {
                 "memory_summary": memory_summary,
                 "similar_cases": similar_cases,
-            }
+            },
         }
 
     except HTTPException:
         raise
 
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Erro na busca semântica: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Erro na busca semântica: {str(e)}")
+
 
 @app.post("/memory/search")
 def memory_search(request: InitiativeRequest):
@@ -192,15 +154,9 @@ def memory_search(request: InitiativeRequest):
         text_to_search = request.initiative.strip()
 
         if not text_to_search:
-            raise HTTPException(
-                status_code=400,
-                detail="Texto de busca vazio."
-            )
+            raise HTTPException(status_code=400, detail="Texto de busca vazio.")
 
-        similar_cases = find_similar_cases_hybrid(
-            current_initiative=text_to_search,
-            limit=5
-        )
+        similar_cases = find_similar_cases_hybrid(request.initiative)
 
         memory_summary = build_memory_summary(similar_cases)
 
@@ -209,53 +165,31 @@ def memory_search(request: InitiativeRequest):
             "data": {
                 "memory_summary": memory_summary,
                 "similar_cases": similar_cases,
-            }
+            },
         }
 
     except HTTPException:
         raise
 
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Erro na busca de memória: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Erro na busca de memória: {str(e)}")
 
-def load_assessments():
-    if not DB_FILE.exists():
-        return []
-
-    try:
-        with DB_FILE.open("r", encoding="utf-8") as f:
-            return json.load(f)
-    except json.JSONDecodeError:
-        return []
-
-def save_assessments(items):
-    with DB_FILE.open("w", encoding="utf-8") as f:
-        json.dump(items, f, ensure_ascii=False, indent=2)
 
 @app.post("/assess-file")
 async def assess_file(file: UploadFile = File(...)):
     try:
         if not file.filename.lower().endswith((".txt", ".md")):
-            raise HTTPException(
-                status_code=400,
-                detail="Formato inválido. Envie apenas arquivos .txt ou .md."
-            )
+            raise HTTPException(status_code=400, detail="Formato inválido. Envie apenas arquivos .txt ou .md.")
 
         content_bytes = await file.read()
         initiative_text = content_bytes.decode("utf-8").strip()
 
         if not initiative_text:
-            raise HTTPException(
-                status_code=400,
-                detail="O arquivo está vazio."
-            )
+            raise HTTPException(status_code=400, detail="O arquivo está vazio.")
 
         result = assess_initiative(initiative_text)
 
-        assessments = load_assessments()
+        assessments = load_all_assessments()
         result_dict = result.model_dump()
 
         memory_summary = (
@@ -300,16 +234,11 @@ async def assess_file(file: UploadFile = File(...)):
         raise
 
     except UnicodeDecodeError:
-        raise HTTPException(
-            status_code=400,
-            detail="Não foi possível ler o arquivo. Salve o arquivo como UTF-8."
-        )
+        raise HTTPException(status_code=400, detail="Não foi possível ler o arquivo. Salve o arquivo como UTF-8.")
 
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Erro ao avaliar arquivo: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Erro ao avaliar arquivo: {str(e)}")
+
 
 @app.get("/")
 def root():
@@ -325,11 +254,7 @@ def assess(request: InitiativeRequest):
         similar_cases = find_similar_cases_hybrid(request.initiative)
         memory_summary = build_memory_summary(similar_cases)
 
-        result = assess_initiative(
-            request.initiative,
-            similar_cases=similar_cases,
-            memory_summary=memory_summary
-        )
+        result = assess_initiative(request.initiative, similar_cases=similar_cases, memory_summary=memory_summary)
 
         saved = save_assessment(request.initiative, result)
         review_item = create_review_item(saved)
@@ -346,28 +271,26 @@ def assess(request: InitiativeRequest):
             "meta": {
                 "elapsed_seconds": round(elapsed, 2),
                 "similar_cases_found": len(similar_cases),
-            }
+            },
         }
 
     except Exception as e:
         elapsed = time.perf_counter() - started
         log_event("ASSESS_ERROR", f"error={repr(e)} elapsed={elapsed:.2f}s")
 
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to assess initiative: {str(e)}"
-        )
-    
+        raise HTTPException(status_code=500, detail=f"Failed to assess initiative: {str(e)}")
+
+
 @app.get("/assessments")
 def list_assessments():
-    assessments = load_assessments()
+    assessments = load_all_assessments()
 
     summary = [
         {
             "id": item["id"],
             "initiative": item["initiative"],
             "created_at": item["created_at"],
-            "viability_score": item.get("viability_score")
+            "viability_score": item.get("viability_score"),
         }
         for item in assessments
     ]
@@ -377,13 +300,14 @@ def list_assessments():
 
 @app.get("/assessments/{assessment_id}")
 def get_assessment(assessment_id: str):
-    assessments = load_assessments()
+    assessments = load_all_assessments()
 
     for item in assessments:
         if item["id"] == assessment_id:
             return {"data": item}
 
     raise HTTPException(status_code=404, detail="Assessment não encontrado")
+
 
 def print_assessment(result):
     print("\n=== AVALIAÇÃO DA INICIATIVA ===")

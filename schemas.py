@@ -1,6 +1,8 @@
-from pydantic import BaseModel, Field
-from typing import List, Optional
 from datetime import datetime
+from typing import List, Optional
+
+from pydantic import BaseModel, Field
+
 
 class AssessmentScores(BaseModel):
     business_value: int = Field(ge=0, le=10)
@@ -88,11 +90,6 @@ class SavedAssessment(BaseModel):
     result: InitiativeAssessment
 
 
-class AssessmentComparisonRequest(BaseModel):
-    current_id: str
-    previous_id: str
-
-
 class AssessmentComparisonResult(BaseModel):
     summary: str
     major_differences: List[str]
@@ -110,10 +107,3 @@ class HumanReviewItem(BaseModel):
     assigned_to: Optional[str] = None
     resolution_note: str = ""
     resolved_at: Optional[datetime] = None
-
-
-class HumanReviewActionRequest(BaseModel):
-    reviewer_name: str
-    action: str = Field(description="in_review, approved ou rejected")
-    resolution_note: str = ""
-

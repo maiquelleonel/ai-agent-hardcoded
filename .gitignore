@@ -24,4 +24,5 @@ data/
 
 # OS
 .DS_Store
-Thumbs.db
+Thumbs.dbmaster_main.py
+master_main.py
